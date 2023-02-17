@@ -43,6 +43,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <thrust/device_vector.h>
 #include <vector>
 
@@ -384,6 +385,8 @@ run_benchmark_template(
   size_t compressed_size = 0;
   double comp_time = 0.0;
   double decomp_time = 0.0;
+  double compression_throughputs[count];
+  double decompression_throughputs[count];
   for (size_t iter = 0; iter < count; ++iter) {
     // compression
     nvcompStatus_t status;
@@ -565,8 +568,8 @@ run_benchmark_template(
 
     // count everything from our iteration
     compressed_size += comp_bytes;
-    comp_time += compress_ms * 1.0e-3;
-    decomp_time += decompress_ms * 1.0e-3;
+    compression_throughputs[iter] = (double)total_bytes / (1.0e9 * (compress_ms * 1.0e-3));
+    decompression_throughputs[iter] = (double)total_bytes / (1.0e9 * (decompress_ms * 1.0e-3));;
   }
   CUDA_CHECK(cudaStreamDestroy(stream));
 
@@ -576,51 +579,24 @@ run_benchmark_template(
   decomp_time /= count;
 
   if (!warmup) {
-    const double comp_ratio = (double)total_bytes / compressed_size;
-    const double compression_throughput_gbs = (double)total_bytes / (1.0e9 *
-        comp_time);
-    const double decompression_throughput_gbs = (double)total_bytes / (1.0e9 *
-        decomp_time);
-
-    if (!csv_output) {
-      std::cout << "----------" << std::endl;
-      std::cout << "files: " << num_files << std::endl;
-      std::cout << "uncompressed (B): " << total_bytes << std::endl;
-      std::cout << "comp_size: " << compressed_size 
-                << ", compressed ratio: " << std::fixed << std::setprecision(4)
-                << comp_ratio << std::endl;
-      std::cout << "compression throughput (GB/s): " << compression_throughput_gbs << std::endl;
-      std::cout << "decompression throughput (GB/s): " << decompression_throughput_gbs << std::endl;
+    double comp_median;
+    double decomp_median;
+    std::sort(compression_throughputs, compression_throughputs + count);
+    std::sort(decompression_throughputs, decompression_throughputs + count);
+    if (count % 2 == 0) {
+      comp_median = (compression_throughputs[(count - 1) / 2] + compression_throughputs[count / 2]) / 2.0;
+      decomp_median = (decompression_throughputs[(count - 1) / 2] + decompression_throughputs[count / 2]) / 2.0;
     } else {
-      // header
-      std::cout << "Files";
-      std::cout << separator << "Duplicate data";
-      std::cout << separator << "Size in MB";
-      std::cout << separator << "Pages";
-      std::cout << separator << "Avg page size in KB";
-      std::cout << separator << "Max page size in KB";
-      std::cout << separator << "Ucompressed size in bytes";
-      std::cout << separator << "Compressed size in bytes";
-      std::cout << separator << "Compression ratio";
-      std::cout << separator << "Compression throughput (uncompressed) in GB/s";
-      std::cout << separator << "Decompression throughput (uncompressed) in GB/s";
-      std::cout << std::endl;
-
-      // values
-      std::cout << num_files;
-      std::cout << separator << duplicate_count;
-      std::cout << separator << (total_bytes * 1e-6); // MB
-      std::cout << separator << data.size();
-      std::cout << separator << ((1e-3*total_bytes) / data.size()); // KB
-      std::cout << separator << (1e-3*chunk_size); // KB
-      std::cout << separator << total_bytes;
-      std::cout << separator << compressed_size;
-      std::cout << separator << std::fixed << std::setprecision(2)
-                << comp_ratio;
-      std::cout << separator << compression_throughput_gbs;
-      std::cout << separator << decompression_throughput_gbs;
-      std::cout << std::endl;
+      comp_median = compression_throughputs[count / 2];
+      decomp_median = decompression_throughputs[count / 2];
     }
+
+    const double comp_ratio = (double)total_bytes / compressed_size;
+    std::cout << "num_runs: " << count << ", ";
+    std::cout << "size: " << total_bytes << ", ";
+    std::cout << "comp_size: " << compressed_size << ", compressed ratio: " << std::fixed << std::setprecision(4) << comp_ratio << ", ";
+    std::cout << "compression throughput (GB/s): " << comp_median << ", ";
+    std::cout << "decompression throughput (GB/s): " << decomp_median << std::endl;
   }
 }
 
@@ -812,6 +788,8 @@ int main(int argc, char** argv)
 
   auto data = multi_file(args.filenames, args.chunk_size, args.has_page_sizes,
       args.duplicate_count);
+
+  std::cout << "file: " << args.filenames[0] << ", ";
 
   // one warmup to allow cuda to initialize
   run_benchmark(data, true, args.warmup_count, false, false,
